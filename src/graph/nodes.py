@@ -88,7 +88,7 @@ def supervisor_node(state: State) -> Command[Literal[*TEAM_MEMBERS, "__end__"]]:
     messages = apply_prompt_template("supervisor", state)
     response = (
         get_llm_by_type(AGENT_LLM_MAP["supervisor"])
-        .with_structured_output(Router)
+        .with_structured_output(Router, method = "function_calling")
         .invoke(messages)
     )
     goto = response["next"]
