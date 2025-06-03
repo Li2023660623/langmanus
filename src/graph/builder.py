@@ -21,6 +21,6 @@ def build_graph():
     builder.add_node("supervisor", supervisor_node)
     builder.add_node("researcher", research_node)
     builder.add_node("coder", code_node)
-    builder.add_node("browser", browser_node)
+    builder.add_node("browser", browser_node) # todo 这个后面不要了或者替换为其他的包,现在这个报错
     builder.add_node("reporter", reporter_node)
     return builder.compile()
