@@ -51,6 +51,7 @@ class PDFSequenceTreeBuilder:
             # 阿拉伯数字序号
             (r'^\s*[’‘“”\"\']*(\d+)\s*[、]\s*', 'arabic_dot'),  # 匹配：1、2、3、等数字后跟顿号
             (r'^\s*[’‘“”\"\']*(\d+)\s*[.]\s*(?!\d)', 'arabic_period'),  # 匹配：1、2、3、等数字后跟点号后面不是数字的
+            (r'^\s*[’‘“”\"\']*(\d+)\s*）\s*', 'arabic_right_paren'),  # 匹配：1）2）3）等数字后跟右括号
             (r'^\s*[’‘“”\"\']*（(\d+)）', 'arabic_paren'),  # 匹配：（1）（2）（3）等数字带中文括号
             (r'^\s*[’‘“”\"\']*\((\d+)\)', 'arabic_bracket'),  # 匹配：(1)(2)(3)等数字带英文括号
             # (r'^\s*[\[【](\d+)[\]】]\s*', 'arabic_square'),  # 匹配：[1][2]或【1】【2】等数字带方括号
@@ -95,6 +96,7 @@ class PDFSequenceTreeBuilder:
             'chinese_bracket': ['一'],
             'arabic_dot': ['1'],
             'arabic_period': ['1'],
+            'arabic_right_paren': ['1'],
             'arabic_paren': ['1'],
             'arabic_bracket': ['1'],
             'letter_upper_dot': ['A'],
@@ -211,14 +213,18 @@ class PDFSequenceTreeBuilder:
 
                 # 检查序号前面的字符数量是否不超过两个字符
                 if self._is_valid_title_position(merged_text, sequence_match[0]):
-                    sequence_info = {
-                        "text": merged_text,
-                        "page": page_num,
-                        "rect": merged_bbox,
-                        "sequence_type": sequence_match[1],
-                        "value": sequence_match[0]
-                    }
-                    sequences.append(sequence_info)
+                    # 检查序号后的内容是否像标题（不是长句子）
+                    if self._is_valid_title_content(merged_text, sequence_match[0]):
+                        # 检查序号的左边距是否合理（特别是对于1）类型的序号）
+                        if self._is_valid_sequence_margin(merged_bbox, sequence_match[1], page):
+                            sequence_info = {
+                                "text": merged_text,
+                                "page": page_num,
+                                "rect": merged_bbox,
+                                "sequence_type": sequence_match[1],
+                                "value": sequence_match[0]
+                            }
+                            sequences.append(sequence_info)
             # else:
             #     # 如果合并后不是序号，检查单个片段是否为序号
             #     for text, bbox, seq_match in fragments:
@@ -243,6 +249,10 @@ class PDFSequenceTreeBuilder:
         """识别文本中的序号"""
         text = text.strip()
         if not text:
+            return None
+
+        # 排除包含之的正则
+        if re.search(r'”之', text):
             return None
 
         # 排除以金额和百分比开头的文本
@@ -277,7 +287,7 @@ class PDFSequenceTreeBuilder:
             for i, char in enumerate(text):
                 if clean_sequence.startswith(char):
                     # 找到可能的起始位置，检查是否匹配
-                    potential_match = text[i:i+len(clean_sequence)]
+                    potential_match = text[i:i + len(clean_sequence)]
                     if clean_sequence in potential_match:
                         sequence_pos = i
                         break
@@ -298,6 +308,129 @@ class PDFSequenceTreeBuilder:
 
         # 序号前面不能超过两个字符
         return content_chars <= 2
+
+    def _is_valid_title_content(self, text: str, sequence_value: str) -> bool:
+        """检查序号后的内容是否像标题（不是长句子）"""
+        # 找到序号的位置
+        sequence_pos = text.find(sequence_value)
+        if sequence_pos == -1:
+            return False
+
+        # 获取序号后的内容
+        content_after_sequence = text[sequence_pos + len(sequence_value):].strip()
+
+        # 如果序号后没有内容，过滤掉
+        if not content_after_sequence:
+            return False
+
+        # 检查内容长度，过长的可能不是标题
+        if len(content_after_sequence) > 200:
+            return False
+
+        # 检查是否包含过多的句号，可能是长句子而不是标题
+        period_count = content_after_sequence.count('。') + content_after_sequence.count('.')
+        if period_count > 2:
+            return False
+
+        return True
+
+    def _is_valid_sequence_margin(self, bbox: List[float], seq_type: str, page) -> bool:
+        """检查序号的左边距是否合理（特别是对于1）类型的序号）"""
+        # 对于 arabic_right_paren 类型（1）格式），需要检查左边距
+        if seq_type == 'arabic_right_paren':
+            # 获取页面中所有文本的左边距，找到正文开始位置
+            text_left_margins = self._get_page_text_left_margins(page)
+
+            if not text_left_margins:
+                return True  # 如果无法获取文本边距信息，默认通过
+
+            # 找到最常见的左边距位置（正文开始位置）
+            main_text_left_margin = self._find_main_text_left_margin(text_left_margins)
+
+            # 序号的左边距
+            sequence_left_margin = bbox[0]
+
+            # 如果序号的左边距明显小于正文左边距，说明是直接顶行的序号，需要过滤
+            # 允许一定的容差（比如10个像素）
+            margin_tolerance = 5
+
+            if sequence_left_margin < main_text_left_margin + margin_tolerance:
+                return False
+
+        return True
+
+    def _get_page_text_left_margins(self, page) -> List[float]:
+        """获取页面中所有文本的左边距"""
+        left_margins = []
+
+        try:
+            # 获取页面的文本块信息
+            text_dict = page.get_text("dict")
+
+            for block in text_dict.get("blocks", []):
+                if "lines" not in block:
+                    continue
+
+                for line in block["lines"]:
+                    for span in line.get("spans", []):
+                        text = span.get("text", "").strip()
+                        if not text:
+                            continue
+
+                        # 获取文本的边界框
+                        bbox = span.get("bbox", [0, 0, 0, 0])
+                        left_margin = bbox[0]
+
+                        # 过滤掉明显异常的边距值
+                        if left_margin > 0:
+                            left_margins.append(left_margin)
+
+        except Exception:
+            pass
+
+        return left_margins
+
+    def _find_main_text_left_margin(self, left_margins: List[float]) -> float:
+        """找到最靠左的正文位置（正文开始位置）"""
+        if not left_margins:
+            return 0
+
+        # 对左边距进行分组，容差为5像素
+        margin_tolerance = 5
+        margin_groups = {}
+
+        for margin in left_margins:
+            # 找到最接近的分组
+            found_group = False
+            for group_key in margin_groups.keys():
+                if abs(margin - group_key) <= margin_tolerance:
+                    margin_groups[group_key].append(margin)
+                    found_group = True
+                    break
+
+            if not found_group:
+                margin_groups[margin] = [margin]
+
+        # 找到最靠左的分组（最小的左边距）
+        # 但要求该分组至少有一定数量的文本，避免异常值
+        min_group_size = max(1, len(left_margins) // 20)  # 至少要有总数的5%
+
+        valid_groups = [(group_key, group_margins) for group_key, group_margins in margin_groups.items()
+                        if len(group_margins) >= min_group_size]
+
+        if not valid_groups:
+            # 如果没有足够大的分组，就取所有分组中最小的
+            min_margin = min(margin_groups.keys())
+            return min_margin
+
+        # 在有效分组中找到最靠左的
+        min_group_key = min(valid_groups, key=lambda x: x[0])[0]
+        min_group_margins = margin_groups[min_group_key]
+
+        # 使用该分组的平均值作为主要左边距
+        main_margin = sum(min_group_margins) / len(min_group_margins)
+
+        return main_margin
 
     def _is_valid_sequence_number(self, value: str) -> bool:
         """检查序号数值是否有效（不超过100）"""
@@ -351,7 +484,8 @@ class PDFSequenceTreeBuilder:
             else:
                 last_node = stack[-1]
 
-                if self._is_same_level_sequence(last_node.sequence_type, last_node.text, seq_type, seq_info["text"]):
+                if self._is_same_level_sequence(last_node.sequence_type, last_node.text, last_node.rect, seq_type,
+                                                seq_info["text"], seq_info["rect"]):
                     # 同类型序号且确实是同级关系
                     node.level = last_node.level
                     stack.pop()  # 移除上一个同级节点
@@ -376,13 +510,14 @@ class PDFSequenceTreeBuilder:
                     # 首先检查是否与栈中某个节点同类型且同层级（同级关系）
                     found_sibling = False
                     for i in range(len(stack) - 1, -1, -1):
-                        if self._is_same_level_sequence(stack[i].sequence_type, stack[i].text, seq_type, seq_info["text"]):
+                        if self._is_same_level_sequence(stack[i].sequence_type, stack[i].text, stack[i].rect, seq_type,
+                                                        seq_info["text"], seq_info["rect"]):
                             # 找到同类型且同层级的节点，作为同级关系
                             node.level = stack[i].level
                             # 回退到该节点的父级
                             if i > 0:
                                 # 有父节点，添加到父节点的子节点列表
-                                parent = stack[i-1]
+                                parent = stack[i - 1]
                                 parent.children.append(node)
                                 # 更新栈，保留到父节点，然后添加当前节点
                                 stack = stack[:i] + [node]
@@ -422,7 +557,7 @@ class PDFSequenceTreeBuilder:
         # 简化的同级判断逻辑，可以根据需要扩展
         type_groups = [
             ['chinese_dot', 'chinese_paren', 'chinese_bracket'],
-            ['arabic_dot', 'arabic_paren', 'arabic_bracket', 'arabic_square'],
+            ['arabic_dot', 'arabic_paren', 'arabic_bracket', 'arabic_right_paren', 'arabic_square'],
             ['letter_upper_dot', 'letter_upper_paren', 'letter_upper_bracket'],
             ['letter_lower_dot', 'letter_lower_paren', 'letter_lower_bracket'],
             ['roman_dot', 'roman_paren', 'roman_bracket'],
@@ -438,16 +573,27 @@ class PDFSequenceTreeBuilder:
 
         return False
 
-    def _is_same_level_sequence(self, seq_type1: str, text1: str, seq_type2: str, text2: str) -> bool:
-        """判断两个序号是否属于同一层级（包含类型判断和连续性判断）"""
+    def _is_same_level_sequence(self, seq_type1: str, text1: str, rect1: List[float], seq_type2: str, text2: str,
+                                rect2: List[float]) -> bool:
+        """判断两个序号是否属于同一层级（包含类型判断、连续性判断和位置判断）"""
         # 首先判断类型是否相同
         if seq_type1 != seq_type2:
             return False
 
+        # 检查x坐标位置是否相近（同级别的序号应该有相同的左边距）
+        # 特别针对汉字数字类型进行位置检查
+        if seq_type1 in ['chinese_dot', 'chinese_period', 'chinese_paren', 'chinese_bracket']:
+            x1 = rect1[0]  # 第一个序号的左边距
+            x2 = rect2[0]  # 第二个序号的左边距
+            position_tolerance = 10  # 位置容差，10像素
+
+            if abs(x1 - x2) > position_tolerance:
+                return False  # 位置差异太大，不是同级
+
         seq_type = seq_type1  # 类型相同，使用其中一个
 
         # 对于带括号的序号（中文括号和阿拉伯数字括号），需要判断序号值的连续性
-        if seq_type in ['chinese_paren', 'arabic_paren', 'chinese_bracket', 'arabic_bracket']:
+        if seq_type in ['chinese_paren', 'arabic_paren', 'chinese_bracket', 'arabic_bracket', 'arabic_right_paren']:
             # 提取序号值
             value1 = self._extract_sequence_value(text1, seq_type)
             value2 = self._extract_sequence_value(text2, seq_type)
@@ -594,61 +740,51 @@ class PDFSequenceTreeBuilder:
         table_areas = []
 
         try:
-            # 方法1：使用PyMuPDF的表格检测功能
+            # 方法1：使用PyMuPDF的表格检测功能，但需要验证
             tables = page.find_tables()
             for table in tables:
-                # 获取表格的边界框
-                bbox = table.bbox
-                table_areas.append(list(bbox))
+                # 验证这个区域是否真的是表格
+                if self._validate_table_area(page, table):
+                    bbox = table.bbox
+                    table_areas.append(list(bbox))
         except:
             # 如果表格检测失败，使用备用方法
             pass
 
-        # 方法2：基于线条检测表格（备用方法）
-        if not table_areas:
-            table_areas = self._detect_table_by_lines(page)
-
         return table_areas
 
-    def _detect_table_by_lines(self, page) -> List[List[float]]:
-        """通过线条检测表格区域"""
-        table_areas = []
-
+    def _validate_table_area(self, page, table) -> bool:
+        """验证检测到的区域是否真的是表格 - 过滤表头有多列但只有第一列有文字且文字较长的情况"""
         try:
-            # 获取页面中的所有绘图对象
-            drawings = page.get_drawings()
+            # 检查table对象是否有header属性
+            if not hasattr(table, 'header') or not table.header:
+                return True  # 没有表头信息时，保守地认为是表格
 
-            # 收集所有水平和垂直线条
-            horizontal_lines = []
-            vertical_lines = []
+            header = table.header
+            header_names = header.names
 
-            for drawing in drawings:
-                for item in drawing.get("items", []):
-                    if item[0] == "l":  # 线条
-                        x1, y1, x2, y2 = item[1:5]
+            # 检查是否只有第一列有文字且文字较长的情况
+            # 统计有内容的列数
+            non_empty_columns = []
+            for i, name in enumerate(header_names):
+                if name and name.strip():
+                    non_empty_columns.append(i)
 
-                        # 判断是水平线还是垂直线
-                        if abs(y1 - y2) < 2:  # 水平线
-                            horizontal_lines.append((min(x1, x2), max(x1, x2), y1))
-                        elif abs(x1 - x2) < 2:  # 垂直线
-                            vertical_lines.append((min(y1, y2), max(y1, y2), x1))
+            # 如果只有第一列有内容
+            if len(non_empty_columns) == 1 and non_empty_columns[0] == 0:
+                first_column_text = header_names[0].strip()
+                first_column_length = len(first_column_text)
 
-            # 如果有足够的线条，可能是表格
-            if len(horizontal_lines) >= 3 and len(vertical_lines) >= 2:
-                # 计算表格的大致边界
-                min_x = min(line[2] for line in vertical_lines)
-                max_x = max(line[2] for line in vertical_lines)
-                min_y = min(line[2] for line in horizontal_lines)
-                max_y = max(line[2] for line in horizontal_lines)
+                # 如果第一列文字比较长（超过20个字符），认为不是真正的表格
+                if first_column_length > 20:
+                    return False
 
-                # 添加一些边距
-                margin = 5
-                table_areas.append([min_x - margin, min_y - margin, max_x + margin, max_y + margin])
+            # 其他情况都认为是有效表格
+            return True
 
         except:
-            pass
-
-        return table_areas
+            # 如果验证失败，保守地认为是表格
+            return True
 
     def _is_in_table_area(self, bbox: List[float], table_areas: List[List[float]]) -> bool:
         """检查文本边界框是否在表格区域内"""
@@ -662,7 +798,7 @@ class PDFSequenceTreeBuilder:
 
             # 检查文本是否与表格区域重叠
             if (text_x1 < table_x2 and text_x2 > table_x1 and
-                text_y1 < table_y2 and text_y2 > table_y1):
+                    text_y1 < table_y2 and text_y2 > table_y1):
                 return True
 
         return False
@@ -772,6 +908,8 @@ class PDFSequenceTreeBuilder:
             return f"（{chinese_num}）" if chinese_num else f"（{num}）"
         elif seq_type == 'arabic_paren':
             return f"（{num}）"
+        elif seq_type == 'arabic_right_paren':
+            return f"{num}）"
         elif seq_type == 'chinese_bracket':
             chinese_num = self._number_to_chinese(num)
             return f"({chinese_num})" if chinese_num else f"({num})"
@@ -840,7 +978,7 @@ class PDFSequenceTreeBuilder:
         return result
 
     def save_results(self, sequences: List[Dict[str, Any]], tree_nodes: List[SequenceNode],
-                    output_dir: str = ""):
+                     output_dir: str = ""):
         """保存结果到文件"""
         import os
 
