@@ -1102,58 +1102,43 @@ class PDFSequenceTreeBuilder:
                 result += self.print_tree(node.children, indent + "    ")
         return result
 
-    def save_results(self, sequences: List[Dict[str, Any]], tree_nodes: List[SequenceNode],
-                     output_dir: str = ""):
-        """保存结果到文件"""
-        import os
+    def generate_results(self, sequences: List[Dict[str, Any]], tree_nodes: List[SequenceNode]) -> Dict[str, Any]:
+        """生成结果JSON数据，只包含错误信息和完整目录树"""
+        # 生成树形结构数据（完整目录树）
+        sequence_tree = [node.to_dict() for node in tree_nodes]
 
-        # 保存原始序号数据
-        sequences_file = os.path.join(output_dir, "sequences.json")
-        with open(sequences_file, 'w', encoding='utf-8') as f:
-            json.dump(sequences, f, ensure_ascii=False, indent=2)
+        # 检查序号错误
+        sequence_errors = self.check_sequence_errors(tree_nodes)
 
-        # 保存树形结构数据
-        tree_data = [node.to_dict() for node in tree_nodes]
-        tree_file = os.path.join(output_dir, "sequence_tree.json")
-        with open(tree_file, 'w', encoding='utf-8') as f:
-            json.dump(tree_data, f, ensure_ascii=False, indent=2)
+        # 构建结果字典，只包含两部分内容
+        result = {
+            "sequence_errors": sequence_errors,  # 错误的序号信息
+            "sequence_tree": sequence_tree       # 完整的目录树
+        }
 
-        # 保存树形结构文本
-        tree_text = self.print_tree(tree_nodes)
-        text_file = os.path.join(output_dir, "sequence_tree.txt")
-        with open(text_file, 'w', encoding='utf-8') as f:
-            f.write(tree_text)
-
-        # 检查序号错误并保存
-        errors = self.check_sequence_errors(tree_nodes)
-        errors_file = os.path.join(output_dir, "sequence_errors.json")
-        with open(errors_file, 'w', encoding='utf-8') as f:
-            json.dump(errors, f, ensure_ascii=False, indent=2)
-
-        print(f"结果已保存到:")
-        print(f"  - 原始数据: {sequences_file}")
-        print(f"  - 树形数据: {tree_file}")
-        print(f"  - 树形文本: {text_file}")
-        print(f"  - 错误检查: {errors_file}")
-
-        if errors:
-            print(f"\n发现 {len(errors)} 个序号错误:")
-            for error in errors:
+        # 打印摘要信息
+        print(f"总共找到 {len(sequences)} 个序号")
+        if sequence_errors:
+            print(f"发现 {len(sequence_errors)} 个序号错误:")
+            for error in sequence_errors:
                 print(f"  - {error['error_type']}: {error['description']}")
         else:
-            print("\n未发现序号错误")
+            print("未发现序号错误")
 
-    def process_pdf(self, pdf_path: str, output_dir: str = ""):
-        """处理PDF文件的完整流程"""
+        return result
+
+    def process_pdf(self, pdf_path: str) -> Dict[str, Any]:
+        """处理PDF文件的完整流程，返回JSON格式结果"""
         print("开始处理PDF文件...")
 
         # 提取序号
         sequences = self.extract_sequences_from_pdf(pdf_path)
         if not sequences:
             print("未找到任何序号")
-            return
-
-        print(f"总共找到 {len(sequences)} 个序号")
+            return {
+                "sequence_errors": [],  # 错误的序号信息
+                "sequence_tree": []     # 完整的目录树
+            }
 
         # 构建树形结构
         tree_nodes = self.build_tree(sequences)
@@ -1162,8 +1147,8 @@ class PDFSequenceTreeBuilder:
         print("\n序号树形结构:")
         print(self.print_tree(tree_nodes))
 
-        # 保存结果
-        self.save_results(sequences, tree_nodes, output_dir)
+        # 生成并返回结果
+        return self.generate_results(sequences, tree_nodes)
 
 
 if __name__ == "__main__":
@@ -1171,5 +1156,9 @@ if __name__ == "__main__":
     builder = PDFSequenceTreeBuilder()
 
     # 处理PDF文件
-    pdf_path = "序号测试4.PDF"
-    builder.process_pdf(pdf_path)
+    pdf_path = "docs/序号测试4.PDF"
+    result = builder.process_pdf(pdf_path)
+
+    # 打印JSON结果（可选）
+    print("\n=== JSON结果 ===")
+    print(json.dumps(result, ensure_ascii=False, indent=2))
