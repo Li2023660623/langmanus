@@ -1171,5 +1171,5 @@ if __name__ == "__main__":
     builder = PDFSequenceTreeBuilder()
 
     # 处理PDF文件
-    pdf_path = "序号测试3.pdf"
+    pdf_path = "docs/序号测试3.pdf"
     builder.process_pdf(pdf_path)
